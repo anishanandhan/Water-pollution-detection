@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>South India Water Pollution Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body.dark-mode {
+      background-color: #121212;
+      color: #e0e0e0;
+    }
+
+    body.dark-mode #map {
+      filter: invert(0.9) hue-rotate(180deg);
+    }
+
+    #map {
+      width: 100%;
+      height: 85vh;
+    }
+
+    .legend {
+      background-color: white;
+      padding: 15px;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+      font-size: 16px;
+      width: 180px;
+      line-height: 1.6;
+    }
+
+    .legend i {
+      width: 22px;
+      height: 22px;
+      float: left;
+      margin-right: 8px;
+      border-radius: 50%;
+    }
+
+    #filter-container {
+      text-align: center;
+      margin: 10px;
+    }
+
+    #pollution-filter, #location-search, button {
+      padding: 6px 12px;
+      font-size: 16px;
+      margin-left: 5px;
+    }
+
+    #status-bar { /* [ADDED] */
+      text-align: center;
+      margin-top: 10px;
+      font-size: 16px;
+      padding: 5px;
+    }
+
+    #dark-toggle { /* [ADDED] */
+      float: right;
+      margin: 5px 10px;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 5px 10px;
+    }
+  </style>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.3.2/papaparse.min.js"></script>
+  <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+</head>
+<body>
+  <button id="dark-toggle">🌙 Toggle Dark Mode</button> <!-- [ADDED] -->
+  <h2 style="text-align:center;">🌊 India Water Pollution Detection Map</h2>
+
+  <div id="filter-container">
+    <label for="pollution-filter"><b>Filter by Pollution Level:</b></label>
+    <select id="pollution-filter">
+      <option value="All">All</option>
+      <option value="Low">Low</option>
+      <option value="Medium">Medium</option>
+      <option value="High">High</option>
+    </select>
+
+    <input type="text" id="location-search" placeholder="Search location..." />
+    <button id="toggle-heatmap">🔁 Toggle Heatmap</button>
+    <button onclick="downloadCSV()">⬇️ Download CSV</button>
+  </div>
+
+  <div id="status-bar">Last updated: -- | Locations shown: --</div> <!-- [ADDED] -->
+  <div id="map"></div>
+
+  <script>
+    const map = L.map('map').setView([15.5, 78.5], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      detectRetina: true,
+      crossOrigin: true
+    }).addTo(map);
+
+    const pollutionFilter = document.getElementById("pollution-filter");
+    const locationSearch = document.getElementById("location-search");
+    const statusBar = document.getElementById("status-bar"); // [ADDED]
+
+    let markers = [];
+    let currentData = [];
+    let heatmapLayer = null;
+    let heatmapVisible = false;
+
+    function getPollutionLevel(turbidity) {
+      return turbidity > 10 ? "High" :
+             turbidity > 7  ? "Medium" : "Low";
+    }
+
+    function getColor(turbidity) {
+      return turbidity > 10 ? "red" :
+             turbidity > 7  ? "orange" : "green";
+    }
+
+    const legend = L.control({ position: "bottomright" });
+    legend.onAdd = function () {
+      const div = L.DomUtil.create('div', 'legend');
+      div.innerHTML = `
+        <b>Pollution Level</b><br>
+        <i style="background:green"></i> Low (≤ 7)<br>
+        <i style="background:orange"></i> Medium (7 - 10)<br>
+        <i style="background:red"></i> High (> 10)
+      `;
+      return div;
+    };
+    legend.addTo(map);
+
+    function simulateDataChange(row) {
+      const turbidityChange = (Math.random() - 0.5) * 2;
+      row.Turbidity = (parseFloat(row.Turbidity) + turbidityChange).toFixed(2);
+      return row;
+    }
+
+    function clearMarkers() {
+      markers.forEach(marker => map.removeLayer(marker));
+      markers = [];
+    }
+
+    function addMarkers(data, filter = "All", searchTerm = "") {
+      clearMarkers();
+      if (heatmapLayer) {
+        map.removeLayer(heatmapLayer);
+        heatmapLayer = null;
+        heatmapVisible = false;
+      }
+
+      const bounds = [];
+      let highPollutionDetected = false;
+
+      data.forEach(row => {
+        row = simulateDataChange(row);
+        const lat = parseFloat(row.Latitude);
+        const lon = parseFloat(row.Longitude);
+        const turbidity = parseFloat(row.Turbidity);
+        const location = row.Location || "Unknown";
+
+        if (isNaN(lat) || isNaN(lon) || isNaN(turbidity)) return;
+
+        const level = getPollutionLevel(turbidity);
+
+        if ((filter !== "All" && level !== filter) ||
+            !location.toLowerCase().includes(searchTerm.toLowerCase())) {
+          return;
+        }
+
+        if (level === "High") highPollutionDetected = true; // [ADDED]
+
+        const marker = L.circleMarker([lat, lon], {
+          radius: 8,
+          fillColor: getColor(turbidity),
+          color: "#000",
+          weight: 1,
+          opacity: 1,
+          fillOpacity: 0.8
+        }).addTo(map);
+
+        marker.bindPopup(`
+          <b>${location}</b><br>
+          Pollution Level: <b>${level}</b><br>
+          pH: ${row.pH || "N/A"}<br>
+          BOD: ${row.BOD_avg || "N/A"}<br>
+          DO: ${row.DO_avg || "N/A"}<br>
+          Conductivity: ${row.Conductivity_avg || "N/A"}<br>
+          Turbidity: ${turbidity}
+        `);
+
+        markers.push(marker);
+        bounds.push([lat, lon]);
+      });
+
+      if (bounds.length > 0) {
+        map.fitBounds(bounds);
+      }
+
+      // [ADDED] Update status
+      const timeNow = new Date().toLocaleTimeString();
+      statusBar.textContent = `Last updated: ${timeNow} | Locations shown: ${markers.length}`;
+
+      // [ADDED] Notification for high pollution
+      if (highPollutionDetected) {
+        console.warn("⚠️ High pollution detected in one or more locations!");
+      }
+    }
+
+    function fetchAndUpdateData() {
+      Papa.parse("water_quality_12.csv", {
+        header: true,
+        download: true,
+        complete: function(results) {
+          currentData = results.data;
+          updateMapFromInputs();
+        }
+      });
+    }
+
+    function updateMapFromInputs() {
+      const level = pollutionFilter.value;
+      const search = locationSearch.value;
+      addMarkers(currentData, level, search);
+    }
+
+    pollutionFilter.addEventListener("change", updateMapFromInputs);
+    locationSearch.addEventListener("input", updateMapFromInputs);
+
+    function toggleHeatmap() {
+      if (heatmapVisible) {
+        if (heatmapLayer) {
+          map.removeLayer(heatmapLayer);
+          heatmapLayer = null;
+        }
+        heatmapVisible = false;
+        updateMapFromInputs();
+      } else {
+        clearMarkers();
+        const filter = pollutionFilter.value;
+        const search = locationSearch.value;
+
+        const heatPoints = currentData
+          .filter(row => {
+            const lat = parseFloat(row.Latitude);
+            const lon = parseFloat(row.Longitude);
+            const turbidity = parseFloat(row.Turbidity);
+            const location = row.Location || "Unknown";
+            if (isNaN(lat) || isNaN(lon) || isNaN(turbidity)) return false;
+            const level = getPollutionLevel(turbidity);
+            return (filter === "All" || level === filter) &&
+                   location.toLowerCase().includes(search.toLowerCase());
+          })
+          .map(row => [parseFloat(row.Latitude), parseFloat(row.Longitude), parseFloat(row.Turbidity) / 100]);
+
+        heatmapLayer = L.heatLayer(heatPoints, { radius: 25, blur: 15 }).addTo(map);
+        heatmapVisible = true;
+      }
+    }
+
+    document.getElementById("toggle-heatmap").addEventListener("click", toggleHeatmap);
+
+    function downloadCSV() {
+      const filter = pollutionFilter.value;
+      const search = locationSearch.value;
+
+      const filtered = currentData
+        .map(row => {
+          const turbidity = parseFloat(row.Turbidity);
+          const location = row.Location || "Unknown";
+          const level = getPollutionLevel(turbidity);
+          return { ...row, Pollution_Level: level };
+        })
+        .filter(row => {
+          const location = row.Location || "Unknown";
+          return (filter === "All" || row.Pollution_Level === filter) &&
+                 location.toLowerCase().includes(search.toLowerCase());
+        });
+
+      const csvContent = Papa.unparse(filtered);
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "filtered_water_data.csv";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // [ADDED] Dark mode toggle
+    document.getElementById("dark-toggle").addEventListener("click", () => {
+      document.body.classList.toggle("dark-mode");
+    });
+
+    fetchAndUpdateData();
+    setInterval(fetchAndUpdateData, 60000); // Refresh every 1 minute
+  </script>
+</body>
+</html>
